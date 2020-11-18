@@ -1,0 +1,133 @@
+#100k movie Data
+
+# 데이터를 불러올 때, 구분자(sep)가 단일 문자일 경우만 .csv 포맷 사용가능
+
+#ratingDF
+rating = spark.read.format("csv").option("sep","\t").option("inferSchema","true").load("data/ml-100k/u.data")
+col_names=["user","item","rating","timestamp"]
+ratingDF = rating.toDF(*col_names)
+ratingDF.show(5)
+
+#userDF
+user = spark.read.format("csv").option("sep","|").option("printSchema","true").load("data/ml-100k/u.user")
+col_names=["user","age","gender","occupation","zip_code"]
+userDF=user.toDF(*col_names)
+userDF.show(5)
+
+#movieDF
+movie = spark.read.format("csv").option("sep","|").option("inferSchema","true").load("data/ml-100k/u.item")
+col_names = ["_c"+str(x) for x in range(5,24)]
+movieDF=movie.select(col("_c0").alias("item"),col("_c1").alias("title"),array(col_names).alias("genre_array"))
+
+#genreDF
+genre = spark.read.format("csv").option("sep","|").option("inferSchema","true").load("data/ml-100k/u.genre")
+col_names = ["genre", "code"]
+genreDF = genre.toDF(*col_names)
+
+# evaluator def
+def evaluation(rank_v, reg_v):
+  als = ALS(rank = rank_v, regParam=reg_v, seed=1)
+  print("rank = " + str(rank_v) + " regParam = " + str(reg_v))
+  alsModel = als.fit(train)
+  #pred = alsModel.transform(train) #안써도
+  #rmse = evaluator.evaluate(pred.na.drop()) #되는
+  #print("train: " + str(rmse)) #부분
+  pred = alsModel.transform(test)
+  rmse = evaluator.evaluate(pred.na.drop())
+  print("test: " + str(rmse))
+
+# import functions (함수 임포트)
+from pyspark.sql.functions import *
+from pyspark.ml.recommendation import *
+from pyspark.ml.evaluation import *
+
+
+### movieData #3 (과제 3) ###
+[B] 데이터 로드 및 탐색
+2) ratingDF 분석
+a) ratingDF.count() / ratingDF.select("user").distinct().count() / ratingDF.select("item").distinct().count()
+b) ratingDF.select(avg("rating"), max("rating"), min("rating")).show()
+c) ratingDF.groupBy("rating").agg(count("rating")).orderBy("rating").show()
+d) ratingDF.groupBy("user").agg(count("item").alias("n")).select(max("n"), min("n")).show()
+
+3) userDF 분석
+a) userDF.select("occupation").distinct().count()
+b) userDF.groupBy("gender").agg(count("user")).show()
+
+4) movieDF 분석
+a) movieDF.where("genre_array[1] == 1").count()
+b) movieDF.where("genre_array[5] == 1").where("genre_array[14] == 1").count()
+
+5) join analysis (조인 분석)
+a) joinDF = ratingDF.join(userDF, ratingDF.user == userDF.user, "inner") # join DataFrame
+- joinDF.groupBy("gender").agg(avg("rating")).show()
+b) joinDF = ratingDF.join(movieDF, ratingDF.item == movieDF.item, "inner")
+- joinDF.groupBy("title").agg(count("user"), avg("rating")).where("count(user) >=10").orderBy("avg(rating)", ascending = False).limit(5).show(truncate=False)
+### or (아래에 있는 코드가 더 정확함)###
+ratingData = ratingDF.groupBy("item").agg(count("item"), avg("rating")).where("count(item)>=10").orderBy("avg(rating)", ascending = False).limit(5)
+col_names = ["item", "count", "avg_rating"]
+ratingData = ratingData.toDF(*col_names)
+ratingData = ratingData.join(movieDF, ratingData.item == movieDF.item, "inner")
+
+[C] recommend (추천)
+1) train, test = ratingDF.randomSplit([0.8, 0.2], seed=1)
+2) evaluator = RegressionEvaluator(metricName = "rmse", labelCol="rating", predictionCol="prediction")
+### ! def evaluation(rank_v, reg_v) before for loop(루프문 돌리기 전에 evaluation 함수 선언할것) ###
+for r in [10, 5, 1]:
+  for reg in [1.0, 0.1, 0.01]:
+    evaluation(r, reg)
+3) rank = 5, regParam = 0.1 / minimum rmse
+
+[4]
+# best model setting (최적 모델 선택, 세팅)
+rank_v = 5
+reg_v = 0.1
+als = ALS(rank = rank_v, regParam = reg_v, seed=1)
+
+# calculation user-factor matrix & item-factor matrix about latent factors (latent factor = 5) 매트릭스 2개 만들기(잠재 요인이 5개, 최적 모델)
+model = als.fit(ratingDF)
+
+# calculation prediction of inner product (내적으로 예상 평점 계산)
+predict = model.transform(ratingDF)
+predict.show(5)
+
+#int type variables (필요한 변수들)
+userID = 100
+n = 10
+
+a)
+user_recommend10 = model.recommendForAllUsers(n)
+user_recommend10.where(user_recommend10.user == 1).select("recommendations.item").show(truncate=False)
+
+b) already_rated = ratingDF.where(col("user") == userID).select("item", "user")
+already_rated.select("item").show()
+
+c)
+movie_list = ratingDF.select("item").distinct().withColumn("user", lit(userID))
+already_rated = ratingDF.where(col("user") == userID).select("item", "user")
+
+# movie_list - already_rated (전체 리스트에서 이미 본영화 빼기)
+candidate = movie_list.subtract(already_rated)
+
+# prediction calculate (트랜스포메이션으로 예상 평점 계산)
+pred = model.transform(candidate).dropna().orderBy("prediction", ascending = False).select("item", "prediction").limit(n)
+pred.select("item").orderBy("prediction", ascending=False).show()
+
+d)
+#def function
+def recommandMovies(model_v, userID, num_movie):
+  movie_list = ratingDF.select("item").distinct().withColumn("user", lit(userID))
+  already_rated = ratingDF.where(col("user") == userID).select("item", "user")
+  candidate = movie_list.subtract(already_rated)
+  pred = model_v.transform(candidate).dropna().orderBy("prediction", ascending = False).select("item", "prediction").limit(num_movie)
+  rec_movie = pred.join(movieDF, pred.item == movieDF.item, "left")
+  rec_movie.select(pred.item, "title", "prediction").show(truncate=False)
+
+5)
+#def function
+def recommandUsers(model_v, movieID, num_user):
+  user_list = ratingDF.select("user").distinct().withColumn("item", lit(movieID))
+  already_rated = ratingDF.where(col("item") == movieID).select("user", "item")
+  candidate = user_list.subtract(already_rated)
+  pred = model_v.transform(candidate).dropna().orderBy("prediction", ascending = False).select("user", "prediction").limit(num_user)
+  pred.show(truncate=False)

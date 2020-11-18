@@ -1,0 +1,74 @@
+[A]
+
+1) ratingDF.select("item").distinct().count()
+
+2) ratingDF.groupBy("rating").count().orderBy("rating").show()
+
+3)
+ratingDF.select(avg("rating")).show()
+ratingDF.where("rating != 0").select(avg("rating")).show()
+
+4) bookDF.groupBy("author").agg(count("item")).orderBy(count("item").desc()).limit(5).show()
+
+5)
+ratingCDF = ratingDF.groupBy("item").agg(count("rating")).orderBy(count("rating").desc()).limit(5)
+joinDF = ratingCDF.join(bookDF, ratingCDF.item == bookDF.item, "inner")
+joinDF.select("title").show(truncate=False)
+
+[B]
+1)
+ratingData = ratingDF.withColumn("item_hash", hash("item"))
+ratingData = ratingData.withColumnRenamed("item", "ISBN")
+ratingData = ratingData.withColumnRenamed("item_hash", "item")
+
+train, test = ratingData.randomSplit([0.8, 0.2], seed=1)
+rank_v = 10
+reg_v = 0.5
+als = ALS(rank = rank_v, regParam = reg_v, seed=1)
+evaluator = RegressionEvaluator(metricName = "rmse", labelCol="rating", predictionCol="prediction")
+alsModel = als.fit(train)
+pred = alsModel.transform(test)
+rmse = evaluator.evaluate(pred.na.drop())
+print("test: " + str(rmse))
+
+train, test = ratingData.randomSplit([0.8, 0.2], seed=1)
+rank_v = 20
+reg_v = 1.0
+als = ALS(rank = rank_v, regParam = reg_v, seed=1)
+evaluator = RegressionEvaluator(metricName = "rmse", labelCol="rating", predictionCol="prediction")
+alsModel = als.fit(train)
+pred = alsModel.transform(test)
+rmse = evaluator.evaluate(pred.na.drop())
+print("test: " + str(rmse))
+
+2)
+book_list = ratingData.select("ISBN","item").distinct().withColumn("user", lit(276904))
+already_rated = ratingData.where(col("user") == 276904).select("ISBN","item", "user")
+candidate = book_list.subtract(already_rated)
+
+
+rank_v = 20
+reg_v = 1.0
+als = ALS(rank = rank_v, regParam = reg_v, seed=1)
+model = als.fit(ratingData)
+pred = model.transform(candidate).dropna().orderBy("prediction", ascending = False).select("item","ISBN", "prediction").limit(2)
+bookJoin = bookDF.select("item", "title")
+pred = pred.join(bookJoin, pred.ISBN == bookJoin.item, "inner")
+pred.select(ratingData.item, "ISBN", col("title").alias("Book_title"), "prediction").show(truncate=False)
+
+book_list = ratingData.select("ISBN","item").distinct().withColumn("user", lit(276859))
+already_rated = ratingData.where(col("user") == 276904).select("ISBN","item", "user")
+candidate = book_list.subtract(already_rated)
+
+
+rank_v = 20
+reg_v = 1.0
+als = ALS(rank = rank_v, regParam = reg_v, seed=1)
+model = als.fit(ratingData)
+pred = model.transform(candidate).dropna().orderBy("prediction", ascending = False).select("item","ISBN", "prediction").limit(2)
+bookJoin = bookDF.select("item", "title")
+pred = pred.join(bookJoin, pred.ISBN == bookJoin.item, "inner")
+pred.select(ratingData.item, "ISBN", col("title").alias("Book_title"), "prediction").show(truncate=False)
+
+
+
